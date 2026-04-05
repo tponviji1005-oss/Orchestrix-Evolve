@@ -1,6 +1,6 @@
 # Orchestrix - Multi-Agent Research Intelligence Platform
 
-Orchestrix is a full-stack web application that eliminates fragmentation in the academic research workflow through multi-agent AI orchestration. It queries multiple academic databases, performs analysis, generates citations, and provides synthesis capabilities.
+Orchestrix is a full-stack web application that eliminates fragmentation in the academic research workflow through multi-agent AI orchestration. It queries multiple academic databases, performs analysis, generates citations, provides synthesis capabilities, detects conflicts between agent outputs, and supports scheduled research digests.
 
 ## Prerequisites
 
@@ -23,7 +23,7 @@ cd Evolve-Hackathon
 cd backend
 
 # Create virtual environment (recommended)
-python -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
@@ -75,17 +75,20 @@ The application will be available at:
 ```
 backend/
 ├── main.py              # FastAPI entrypoint and REST endpoints
-├── orchestrator.py       # Central coordination layer
-├── models.py             # SQLAlchemy database models
-├── database.py           # Database session management
-├── schemas.py            # Pydantic request/response models
-├── requirements.txt      # Python dependencies
-├── .env.example          # Environment variables template
+├── orchestrator.py      # Central coordination layer
+├── scheduler.py         # Background task scheduler for digests
+├── models.py            # SQLAlchemy database models
+├── database.py          # Database session management
+├── schemas.py           # Pydantic request/response models
+├── requirements.txt     # Python dependencies
+├── .env.example         # Environment variables template
 └── agents/
     ├── discovery.py      # Research Discovery Agent
-    ├── analysis.py      # Analysis Agent
-    ├── citation.py      # Citation Generator Agent
-    └── summarizer.py    # Summarization Agent
+    ├── analysis.py       # Analysis Agent
+    ├── citation.py       # Citation Generator Agent
+    ├── summarizer.py     # Summarization Agent
+    ├── conflict_detector.py  # Conflict Detection Agent
+    └── digest_scheduler.py   # Scheduled Digest Agent
 ```
 
 ### Frontend (React + Vite)
@@ -173,6 +176,44 @@ frontend/
 | paper_id | UUID | Foreign key to papers |
 | content | Text | Free-text notes |
 
+### Conflicts Table
+| Column | Type | Description |
+|--------|------|-------------|
+| id | UUID | Primary key |
+| session_id | UUID | Foreign key to sessions |
+| conflict_type | String | Type: semantic_contradiction, methodology_mismatch, temporal_contradiction, etc. |
+| severity | String | high, medium, or low |
+| title | String | Brief conflict title |
+| description | Text | Detailed description |
+| analysis_insight | Text | What the Analysis Agent found |
+| summarization_insight | Text | What the Summarization Agent found |
+| resolved | Boolean | Whether conflict is resolved |
+| resolution_notes | Text | Notes on resolution |
+
+### Scheduled Digests Table
+| Column | Type | Description |
+|--------|------|-------------|
+| id | UUID | Primary key |
+| name | String | Digest name |
+| query | String | Search query to run |
+| frequency | String | daily, weekly, biweekly, or monthly |
+| last_run_at | DateTime | When digest last ran |
+| next_run_at | DateTime | When digest will next run |
+| is_active | Boolean | Whether digest is active |
+| notify_email | String | Email for notifications |
+
+### Digest Runs Table
+| Column | Type | Description |
+|--------|------|-------------|
+| id | UUID | Primary key |
+| scheduled_digest_id | UUID | Foreign key to scheduled_digests |
+| session_id | UUID | Foreign key to sessions (created session) |
+| query | String | Query that was run |
+| new_papers_count | Integer | Number of new papers found |
+| new_paper_ids | JSON | Array of new paper external IDs |
+| status | String | pending, running, completed, or failed |
+| error_message | Text | Error details if failed |
+
 ## Relevance Scoring Formula
 
 Papers are ranked using a weighted combination of three factors:
@@ -211,8 +252,25 @@ Two functions:
 - **summarize_paper**: Generates structured summary with abstract compression, key contributions, methodology, and limitations
 - **synthesize_papers**: Combines multiple papers into a cohesive paragraph identifying common themes, contradictions, and research gaps
 
+### Agent 5: Conflict Detection Agent
+Detects contradictions between Analysis and Summarization agents:
+- **Semantic Contradiction**: Analysis keywords vs summary content
+- **Methodology Mismatch**: Analysis focus vs paper methodology
+- **Temporal Contradiction**: Emerging topics vs historical references
+- **Citation Impact Contradiction**: High citations vs perceived limitations
+- **Author Dominance Contradiction**: Few authors dominate vs underemphasized contributions
+- **Keyword Mismatch**: Analysis keywords vs summary emphasis
+
+### Agent 6: Digest Scheduler Agent
+Manages scheduled research digests:
+- Supports daily, weekly, biweekly, and monthly frequencies
+- Tracks papers seen to identify truly new papers
+- Generates email notifications for new findings
+- Creates sessions for digest runs
+
 ## API Endpoints
 
+### Core Endpoints
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | /health | Health check |
@@ -224,6 +282,24 @@ Two functions:
 | POST | /sessions/{id}/synthesize | Synthesize selected papers |
 | GET | /sessions/{id}/export/bib | Export as BibTeX |
 | GET | /sessions/{id}/export/txt | Export citations as text |
+
+### Conflict Resolution Endpoints
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | /sessions/{id}/conflicts | Get all conflicts for a session |
+| POST | /sessions/{id}/conflicts/{conflict_id}/resolve | Mark conflict as resolved |
+| POST | /sessions/{id}/detect-conflicts | Run conflict detection on session |
+
+### Scheduled Digest Endpoints
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | /digests | Create scheduled digest |
+| GET | /digests | List all scheduled digests |
+| GET | /digests/{id} | Get digest with run history |
+| DELETE | /digests/{id} | Delete scheduled digest |
+| PATCH | /digests/{id}/toggle | Enable/disable digest |
+| POST | /digests/{id}/run | Manually trigger digest run |
+| GET | /digests/{id}/preview | Preview new papers for digest |
 
 ## External APIs Used
 
@@ -276,6 +352,18 @@ VITE_API_BASE_URL=http://localhost:8000
 - Merged publication trend charts
 - Unique keyword highlighting
 - Paper overlap detection
+
+### Conflict Resolution
+- Automatic conflict detection during orchestration
+- Manual conflict detection for existing sessions
+- Conflict categorization by type and severity
+- Resolution tracking with notes
+
+### Scheduled Research Digests
+- Create recurring queries with customizable frequency
+- Automatic detection of new papers
+- Email notifications for new findings
+- Historical run tracking and statistics
 
 ## License
 

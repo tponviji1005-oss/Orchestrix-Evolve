@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     JSON,
+    Boolean,
     Enum as SQLEnum,
 )
 from sqlalchemy.orm import relationship
@@ -19,6 +20,13 @@ from database import Base
 
 def generate_uuid():
     return str(uuid.uuid4())
+
+
+class DigestFrequency(enum.Enum):
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    BIWEEKLY = "biweekly"
+    MONTHLY = "monthly"
 
 
 class Session(Base):
@@ -40,6 +48,12 @@ class Session(Base):
     )
     syntheses = relationship(
         "Synthesis", back_populates="session", cascade="all, delete-orphan"
+    )
+    conflicts = relationship(
+        "Conflict", back_populates="session", cascade="all, delete-orphan"
+    )
+    digest_runs = relationship(
+        "DigestRun", back_populates="session", cascade="all, delete-orphan"
     )
 
 
@@ -148,3 +162,67 @@ class Note(Base):
     )
 
     paper = relationship("Paper", back_populates="notes")
+
+
+class Conflict(Base):
+    __tablename__ = "conflicts"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    session_id = Column(String, ForeignKey("sessions.id"), nullable=False)
+    conflict_type = Column(String, nullable=False)
+    severity = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    analysis_insight = Column(Text, nullable=True)
+    summarization_insight = Column(Text, nullable=True)
+    resolved = Column(Boolean, default=False)
+    resolution_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    session = relationship("Session", back_populates="conflicts")
+
+
+class ScheduledDigest(Base):
+    __tablename__ = "scheduled_digests"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    name = Column(String, nullable=False)
+    query = Column(String, nullable=False)
+    frequency = Column(String, nullable=False, default="weekly")
+    last_run_at = Column(DateTime(timezone=True), nullable=True)
+    next_run_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, default=True)
+    notify_email = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    runs = relationship(
+        "DigestRun", back_populates="scheduled_digest", cascade="all, delete-orphan"
+    )
+
+
+class DigestRun(Base):
+    __tablename__ = "digest_runs"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    scheduled_digest_id = Column(
+        String, ForeignKey("scheduled_digests.id"), nullable=False
+    )
+    session_id = Column(String, ForeignKey("sessions.id"), nullable=True)
+    query = Column(String, nullable=False)
+    new_papers_count = Column(Integer, default=0)
+    new_paper_ids = Column(JSON, nullable=False, default=list)
+    status = Column(String, nullable=False, default="pending")
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    scheduled_digest = relationship("ScheduledDigest", back_populates="runs")
+    session = relationship("Session", back_populates="digest_runs")

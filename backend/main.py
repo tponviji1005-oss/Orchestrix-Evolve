@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
@@ -16,6 +16,9 @@ from models import (
     Synthesis,
     Citation,
     Note,
+    Conflict,
+    ScheduledDigest,
+    DigestRun,
 )
 from schemas import (
     SessionCreate,
@@ -31,16 +34,29 @@ from schemas import (
     NoteResponse,
     OrchestrateResponse,
     HealthResponse,
+    ConflictResponse,
+    ConflictResolve,
+    ScheduledDigestCreate,
+    ScheduledDigestResponse,
+    DigestRunResponse,
+    ScheduledDigestWithRuns,
+    ConflictDetectionResult,
 )
 from orchestrator import orchestrate
-from agents import summarizer
+from agents import summarizer, conflict_detector, digest_scheduler
+from scheduler import scheduler
 
 load_dotenv()
 
-app = FastAPI(title="Orchestrix API", version="1.0.0")
+app = FastAPI(title="Orchestrix API", version="2.0.0")
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
-CORS_ORIGINS = [FRONTEND_URL, "http://localhost:5173", "http://127.0.0.1:5173"]
+CORS_ORIGINS = [
+    FRONTEND_URL,
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,6 +70,12 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     init_db()
+    scheduler.start()
+
+
+@app.on_event("shutdown")
+def shutdown():
+    scheduler.stop()
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -105,6 +127,7 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
     papers = db.query(Paper).filter(Paper.session_id == session_id).all()
     analyses = db.query(Analysis).filter(Analysis.session_id == session_id).all()
     syntheses = db.query(Synthesis).filter(Synthesis.session_id == session_id).all()
+    conflicts = db.query(Conflict).filter(Conflict.session_id == session_id).all()
 
     papers_with_details = []
     for paper in papers:
@@ -193,12 +216,31 @@ def get_session(session_id: str, db: Session = Depends(get_db)):
             )
             for s in syntheses
         ],
+        conflicts=[
+            ConflictResponse(
+                id=c.id,
+                session_id=c.session_id,
+                conflict_type=c.conflict_type,
+                severity=c.severity,
+                title=c.title,
+                description=c.description,
+                analysis_insight=c.analysis_insight,
+                summarization_insight=c.summarization_insight,
+                resolved=c.resolved,
+                resolution_notes=c.resolution_notes,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+            )
+            for c in conflicts
+        ],
     )
 
 
 @app.post("/sessions/{session_id}/orchestrate", response_model=OrchestrateResponse)
 async def run_orchestration(
-    session_id: str, page: int = Query(0, ge=0), db: Session = Depends(get_db)
+    session_id: str,
+    page: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
 ):
     db_session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
     if not db_session:
@@ -378,12 +420,155 @@ async def run_orchestration(
                     db.add(analysis)
         db.commit()
 
+    if result.get("conflicts"):
+        for conflict_data in result["conflicts"]:
+            conflict = Conflict(
+                session_id=session_id,
+                conflict_type=conflict_data.get("conflict_type", "unknown"),
+                severity=conflict_data.get("severity", "medium"),
+                title=conflict_data.get("title", "Untitled Conflict"),
+                description=conflict_data.get("description"),
+                analysis_insight=conflict_data.get("analysis_insight"),
+                summarization_insight=conflict_data.get("summarization_insight"),
+                resolved=False,
+            )
+            db.add(conflict)
+        db.commit()
+
     return OrchestrateResponse(
         papers=papers_with_details,
         analysis=result["analysis"],
         citations=result["citations"],
         summaries=result["summaries"],
         trace=result["trace"],
+        conflicts=result.get("conflicts", []),
+    )
+
+
+@app.get("/sessions/{session_id}/conflicts", response_model=List[ConflictResponse])
+def get_session_conflicts(session_id: str, db: Session = Depends(get_db)):
+    db_session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    conflicts = db.query(Conflict).filter(Conflict.session_id == session_id).all()
+    return [
+        ConflictResponse(
+            id=c.id,
+            session_id=c.session_id,
+            conflict_type=c.conflict_type,
+            severity=c.severity,
+            title=c.title,
+            description=c.description,
+            analysis_insight=c.analysis_insight,
+            summarization_insight=c.summarization_insight,
+            resolved=c.resolved,
+            resolution_notes=c.resolution_notes,
+            created_at=c.created_at,
+            updated_at=c.updated_at,
+        )
+        for c in conflicts
+    ]
+
+
+@app.post("/sessions/{session_id}/conflicts/{conflict_id}/resolve")
+def resolve_conflict(
+    session_id: str,
+    conflict_id: str,
+    resolution: ConflictResolve,
+    db: Session = Depends(get_db),
+):
+    conflict = (
+        db.query(Conflict)
+        .filter(Conflict.id == conflict_id, Conflict.session_id == session_id)
+        .first()
+    )
+    if not conflict:
+        raise HTTPException(status_code=404, detail="Conflict not found")
+
+    conflict.resolved = True
+    conflict.resolution_notes = resolution.resolution_notes
+    db.commit()
+
+    return {"status": "resolved", "conflict_id": conflict_id}
+
+
+@app.post(
+    "/sessions/{session_id}/detect-conflicts", response_model=ConflictDetectionResult
+)
+async def detect_conflicts(
+    session_id: str,
+    db: Session = Depends(get_db),
+):
+    db_session = db.query(SessionModel).filter(SessionModel.id == session_id).first()
+    if not db_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    papers = db.query(Paper).filter(Paper.session_id == session_id).all()
+    analyses = db.query(Analysis).filter(Analysis.session_id == session_id).all()
+
+    if not papers:
+        raise HTTPException(status_code=400, detail="No papers in session")
+
+    analysis_data = {}
+    for a in analyses:
+        analysis_data[a.analysis_type] = a.data_json
+
+    papers_data = []
+    summaries_data = []
+    for paper in papers:
+        papers_data.append(
+            {
+                "id": paper.id,
+                "title": paper.title,
+                "authors": paper.authors,
+                "abstract": paper.abstract,
+                "year": paper.year,
+            }
+        )
+        summary = db.query(Summary).filter(Summary.paper_id == paper.id).first()
+        summaries_data.append(
+            {
+                "abstract_compression": summary.abstract_compression
+                if summary
+                else None,
+                "key_contributions": summary.key_contributions if summary else None,
+                "methodology": summary.methodology if summary else None,
+                "limitations": summary.limitations if summary else None,
+            }
+        )
+
+    result = await conflict_detector.detect_conflicts(
+        papers_data, analysis_data, summaries_data
+    )
+
+    for conflict_data in result.get("conflicts", []):
+        existing = (
+            db.query(Conflict)
+            .filter(
+                Conflict.session_id == session_id,
+                Conflict.title == conflict_data.get("title"),
+                Conflict.conflict_type == conflict_data.get("conflict_type"),
+            )
+            .first()
+        )
+        if not existing:
+            conflict = Conflict(
+                session_id=session_id,
+                conflict_type=conflict_data.get("conflict_type", "unknown"),
+                severity=conflict_data.get("severity", "medium"),
+                title=conflict_data.get("title", "Untitled Conflict"),
+                description=conflict_data.get("description"),
+                analysis_insight=conflict_data.get("analysis_insight"),
+                summarization_insight=conflict_data.get("summarization_insight"),
+                resolved=False,
+            )
+            db.add(conflict)
+    db.commit()
+
+    return ConflictDetectionResult(
+        conflicts=result.get("conflicts", []),
+        summary=result.get("summary", "No conflicts detected"),
     )
 
 
@@ -444,7 +629,7 @@ def synthesize_papers(
 
     import asyncio
 
-    synthesis_text = asyncio.run(synthesizer.synthesize_papers(papers_dict))
+    synthesis_text = asyncio.run(summarizer.synthesize_papers(papers_dict))
 
     synthesis = Synthesis(
         session_id=session_id, paper_ids=paper_ids, content=synthesis_text
@@ -525,6 +710,191 @@ def export_txt(session_id: str, db: Session = Depends(get_db)):
             "Content-Disposition": f"attachment; filename=orchestrix_{session_id[:8]}.txt"
         },
     )
+
+
+@app.post("/digests", response_model=ScheduledDigestResponse)
+async def create_digest(digest: ScheduledDigestCreate, db: Session = Depends(get_db)):
+    is_valid, error = await digest_scheduler.verify_query_syntax(digest.query)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error)
+
+    from agents.digest_scheduler import calculate_next_run
+
+    now = datetime.now(timezone.utc)
+    next_run = calculate_next_run(now, digest.frequency)
+
+    db_digest = ScheduledDigest(
+        name=digest.name,
+        query=digest.query,
+        frequency=digest.frequency,
+        notify_email=digest.notify_email,
+        next_run_at=next_run,
+        is_active=True,
+    )
+    db.add(db_digest)
+    db.commit()
+    db.refresh(db_digest)
+
+    scheduler.add_job(str(db_digest.id), db_digest.query, next_run)
+
+    return ScheduledDigestResponse(
+        id=db_digest.id,
+        name=db_digest.name,
+        query=db_digest.query,
+        frequency=db_digest.frequency,
+        last_run_at=db_digest.last_run_at,
+        next_run_at=db_digest.next_run_at,
+        is_active=db_digest.is_active,
+        notify_email=db_digest.notify_email,
+        created_at=db_digest.created_at,
+        updated_at=db_digest.updated_at,
+    )
+
+
+@app.get("/digests", response_model=List[ScheduledDigestResponse])
+def get_digests(db: Session = Depends(get_db)):
+    digests = (
+        db.query(ScheduledDigest).order_by(ScheduledDigest.created_at.desc()).all()
+    )
+    return [
+        ScheduledDigestResponse(
+            id=d.id,
+            name=d.name,
+            query=d.query,
+            frequency=d.frequency,
+            last_run_at=d.last_run_at,
+            next_run_at=d.next_run_at,
+            is_active=d.is_active,
+            notify_email=d.notify_email,
+            created_at=d.created_at,
+            updated_at=d.updated_at,
+        )
+        for d in digests
+    ]
+
+
+@app.get("/digests/{digest_id}", response_model=ScheduledDigestWithRuns)
+def get_digest(digest_id: str, db: Session = Depends(get_db)):
+    digest = db.query(ScheduledDigest).filter(ScheduledDigest.id == digest_id).first()
+    if not digest:
+        raise HTTPException(status_code=404, detail="Digest not found")
+
+    runs = (
+        db.query(DigestRun)
+        .filter(DigestRun.scheduled_digest_id == digest_id)
+        .order_by(DigestRun.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    return ScheduledDigestWithRuns(
+        id=digest.id,
+        name=digest.name,
+        query=digest.query,
+        frequency=digest.frequency,
+        last_run_at=digest.last_run_at,
+        next_run_at=digest.next_run_at,
+        is_active=digest.is_active,
+        notify_email=digest.notify_email,
+        created_at=digest.created_at,
+        updated_at=digest.updated_at,
+        runs=[
+            DigestRunResponse(
+                id=r.id,
+                scheduled_digest_id=r.scheduled_digest_id,
+                session_id=r.session_id,
+                query=r.query,
+                new_papers_count=r.new_papers_count,
+                new_paper_ids=r.new_paper_ids,
+                status=r.status,
+                error_message=r.error_message,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+            )
+            for r in runs
+        ],
+    )
+
+
+@app.delete("/digests/{digest_id}")
+def delete_digest(digest_id: str, db: Session = Depends(get_db)):
+    digest = db.query(ScheduledDigest).filter(ScheduledDigest.id == digest_id).first()
+    if not digest:
+        raise HTTPException(status_code=404, detail="Digest not found")
+
+    scheduler.remove_job(digest_id)
+
+    db.delete(digest)
+    db.commit()
+
+    return {"status": "deleted", "digest_id": digest_id}
+
+
+@app.patch("/digests/{digest_id}/toggle")
+def toggle_digest(digest_id: str, db: Session = Depends(get_db)):
+    digest = db.query(ScheduledDigest).filter(ScheduledDigest.id == digest_id).first()
+    if not digest:
+        raise HTTPException(status_code=404, detail="Digest not found")
+
+    digest.is_active = not digest.is_active
+
+    if digest.is_active and digest.next_run_at:
+        scheduler.add_job(digest_id, digest.query, digest.next_run_at)
+    else:
+        scheduler.remove_job(digest_id)
+
+    db.commit()
+
+    return {
+        "status": "updated",
+        "digest_id": digest_id,
+        "is_active": digest.is_active,
+    }
+
+
+@app.post("/digests/{digest_id}/run")
+def trigger_digest_run(digest_id: str, db: Session = Depends(get_db)):
+    digest = db.query(ScheduledDigest).filter(ScheduledDigest.id == digest_id).first()
+    if not digest:
+        raise HTTPException(status_code=404, detail="Digest not found")
+
+    scheduler.trigger_manual_run(digest_id)
+
+    return {"status": "triggered", "digest_id": digest_id}
+
+
+@app.get("/digests/{digest_id}/preview")
+async def preview_digest(digest_id: str, db: Session = Depends(get_db)):
+    digest = db.query(ScheduledDigest).filter(ScheduledDigest.id == digest_id).first()
+    if not digest:
+        raise HTTPException(status_code=404, detail="Digest not found")
+
+    sessions = (
+        db.query(SessionModel)
+        .filter(SessionModel.query == digest.query)
+        .order_by(SessionModel.created_at.desc())
+        .first()
+    )
+
+    existing_ids = []
+    if sessions:
+        existing_papers = db.query(Paper).filter(Paper.session_id == sessions.id).all()
+        existing_ids = [p.external_id for p in existing_papers if p.external_id]
+
+    result = await digest_scheduler.run_digest(
+        query=digest.query,
+        last_run_at=digest.last_run_at,
+        existing_external_ids=existing_ids,
+        limit=20,
+    )
+
+    return {
+        "query": digest.query,
+        "threshold_date": result.get("threshold_date"),
+        "new_papers_preview": result.get("new_papers", [])[:5],
+        "total_new_count": result.get("total_new", 0),
+        "is_first_run": result.get("is_first_run", True),
+    }
 
 
 if __name__ == "__main__":

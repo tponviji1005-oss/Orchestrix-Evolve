@@ -1,4 +1,30 @@
 import React from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import '../component.css'
+
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.05,
+      delayChildren: 0.1
+    }
+  }
+}
+
+const itemVariants = {
+  hidden: { opacity: 0, x: -20 },
+  visible: {
+    opacity: 1,
+    x: 0,
+    transition: {
+      type: "spring",
+      stiffness: 100,
+      damping: 12
+    }
+  }
+}
 
 function SessionSidebar({ sessions, currentSessionId, onSelectSession }) {
   const formatRelativeTime = (dateString) => {
@@ -17,78 +43,144 @@ function SessionSidebar({ sessions, currentSessionId, onSelectSession }) {
   }
 
   return (
-    <div style={{
-      width: '280px',
-      background: '#1e293b',
-      borderRadius: '12px',
-      padding: '1rem',
-      height: 'fit-content',
-      maxHeight: 'calc(100vh - 200px)',
-      overflow: 'auto',
-      border: '1px solid #334155'
-    }}>
-      <h3 style={{ color: '#f1f5f9', marginBottom: '1rem', fontSize: '1rem' }}>
-        Past Sessions
-      </h3>
+    <div className="session-sidebar">
+      {/* Header */}
+      <div className="sidebar-header">
+        <div className="sidebar-header-icon">
+          <span>📂</span>
+          <motion.div 
+            className="icon-glow"
+            animate={{
+              opacity: [0.5, 1, 0.5],
+              scale: [1, 1.2, 1]
+            }}
+            transition={{
+              duration: 2,
+              repeat: Infinity,
+              ease: "easeInOut"
+            }}
+          />
+        </div>
+        <div className="sidebar-header-content">
+          <h3 className="sidebar-title">Research Sessions</h3>
+          <p className="sidebar-subtitle">{sessions.length} sessions</p>
+        </div>
+      </div>
 
-      {sessions.length === 0 ? (
-        <div style={{ color: '#64748b', fontStyle: 'italic', padding: '1rem 0' }}>
-          No sessions yet
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          {sessions.map((session) => (
-            <button
-              key={session.id}
-              onClick={() => onSelectSession(session.id)}
-              style={{
-                background: currentSessionId === session.id ? '#334155' : 'transparent',
-                border: currentSessionId === session.id ? '1px solid #60a5fa' : '1px solid transparent',
-                borderRadius: '8px',
-                padding: '0.75rem',
-                cursor: 'pointer',
-                textAlign: 'left',
-                transition: 'all 0.2s'
-              }}
+      {/* Divider */}
+      <div className="sidebar-divider">
+        <motion.div 
+          className="divider-glow"
+          animate={{
+            backgroundPosition: ['0% 50%', '100% 50%', '0% 50%']
+          }}
+          transition={{
+            duration: 3,
+            repeat: Infinity,
+            ease: "linear"
+          }}
+        />
+      </div>
+
+      {/* Sessions List */}
+      <div className="sessions-list">
+        <AnimatePresence>
+          {sessions.length === 0 ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="empty-sessions"
             >
-              <div style={{
-                color: currentSessionId === session.id ? '#60a5fa' : '#e2e8f0',
-                fontWeight: '500',
-                fontSize: '0.875rem',
-                marginBottom: '0.25rem',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap'
-              }}>
-                {session.name}
-              </div>
-              <div style={{
-                color: '#64748b',
-                fontSize: '0.75rem',
-                marginBottom: '0.25rem',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap'
-              }}>
-                {session.query}
-              </div>
-              <div style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginTop: '0.5rem'
-              }}>
-                <span style={{ color: '#94a3b8', fontSize: '0.75rem' }}>
-                  {session.paper_count || 0} papers
-                </span>
-                <span style={{ color: '#64748b', fontSize: '0.75rem' }}>
-                  {formatRelativeTime(session.created_at)}
-                </span>
-              </div>
-            </button>
-          ))}
-        </div>
-      )}
+              <motion.div
+                className="empty-icon"
+                animate={{
+                  y: [0, -5, 0],
+                  opacity: [0.5, 1, 0.5]
+                }}
+                transition={{
+                  duration: 2,
+                  repeat: Infinity,
+                  ease: "easeInOut"
+                }}
+              >
+                🔍
+              </motion.div>
+              <p>No sessions yet</p>
+              <span>Start a new search to begin</span>
+            </motion.div>
+          ) : (
+            <motion.div
+              variants={containerVariants}
+              initial="hidden"
+              animate="visible"
+              className="sessions-container"
+            >
+              {sessions.map((session, index) => (
+                <motion.button
+                  key={session.id}
+                  variants={itemVariants}
+                  onClick={() => onSelectSession(session.id)}
+                  className={`session-card ${currentSessionId === session.id ? 'active' : ''}`}
+                  whileHover={{ 
+                    scale: 1.02,
+                    x: 4
+                  }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  {/* Active indicator */}
+                  {currentSessionId === session.id && (
+                    <motion.div
+                      className="active-indicator"
+                      layoutId="activeSession"
+                      transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                    />
+                  )}
+                  
+                  {/* Card glow effect */}
+                  <div className="card-glow" />
+                  
+                  {/* Card content */}
+                  <div className="card-content">
+                    <div className="card-header">
+                      <span className="card-icon">📄</span>
+                      <span className="card-time">{formatRelativeTime(session.created_at)}</span>
+                    </div>
+                    
+                    <h4 className="card-title">{session.name}</h4>
+                    
+                    <p className="card-query">{session.query}</p>
+                    
+                    <div className="card-footer">
+                      <div className="paper-count">
+                        <span className="count-icon">📑</span>
+                        <span className="count-number">{session.paper_count || 0}</span>
+                        <span className="count-label">papers</span>
+                      </div>
+                      
+                      <motion.div 
+                        className="card-arrow"
+                        animate={currentSessionId === session.id ? {
+                          x: [0, 4, 0]
+                        } : {}}
+                        transition={{
+                          duration: 1,
+                          repeat: Infinity,
+                          ease: "easeInOut"
+                        }}
+                      >
+                        →
+                      </motion.div>
+                    </div>
+                  </div>
+                </motion.button>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Bottom decoration */}
+      <div className="sidebar-bottom-glow" />
     </div>
   )
 }

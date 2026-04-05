@@ -121,6 +121,73 @@ class NoteResponse(BaseModel):
         from_attributes = True
 
 
+class ConflictResponse(BaseModel):
+    id: str
+    session_id: str
+    conflict_type: str
+    severity: str
+    title: str
+    description: Optional[str] = None
+    analysis_insight: Optional[str] = None
+    summarization_insight: Optional[str] = None
+    resolved: bool
+    resolution_notes: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ConflictResolve(BaseModel):
+    resolution_notes: str
+
+
+class ScheduledDigestCreate(BaseModel):
+    name: str
+    query: str
+    frequency: str = Field(
+        default="weekly", pattern="^(daily|weekly|biweekly|monthly)$"
+    )
+    notify_email: Optional[str] = None
+
+
+class ScheduledDigestResponse(BaseModel):
+    id: str
+    name: str
+    query: str
+    frequency: str
+    last_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = None
+    is_active: bool
+    notify_email: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DigestRunResponse(BaseModel):
+    id: str
+    scheduled_digest_id: str
+    session_id: Optional[str] = None
+    query: str
+    new_papers_count: int
+    new_paper_ids: List[str]
+    status: str
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ScheduledDigestWithRuns(ScheduledDigestResponse):
+    runs: List[DigestRunResponse] = []
+
+
 class SessionFullResponse(BaseModel):
     id: str
     name: str
@@ -130,6 +197,7 @@ class SessionFullResponse(BaseModel):
     papers: List[PaperWithDetails]
     analyses: List[AnalysisResponse]
     syntheses: List[SynthesisResponse]
+    conflicts: List[ConflictResponse] = []
 
 
 class OrchestrateResponse(BaseModel):
@@ -138,10 +206,16 @@ class OrchestrateResponse(BaseModel):
     citations: List[dict]
     summaries: List[dict]
     trace: List[dict]
+    conflicts: List[dict] = []
 
 
 class HealthResponse(BaseModel):
     status: str
+
+
+class ConflictDetectionResult(BaseModel):
+    conflicts: List[dict]
+    summary: str
 
 
 PaperWithDetails.model_rebuild()

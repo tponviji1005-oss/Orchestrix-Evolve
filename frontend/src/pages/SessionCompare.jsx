@@ -1,9 +1,47 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import '../sessioncompare.css'
 import { api } from '../api.js'
 import {
-  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Legend
 } from 'recharts'
+
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: {
+      staggerChildren: 0.1,
+      delayChildren: 0.2
+    }
+  }
+}
+
+const itemVariants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      type: "spring",
+      stiffness: 100,
+      damping: 12
+    }
+  }
+}
+
+const pulseVariants = {
+  pulse: {
+    scale: [1, 1.05, 1],
+    opacity: [0.7, 1, 0.7],
+    transition: {
+      duration: 2,
+      repeat: Infinity,
+      ease: "easeInOut"
+    }
+  }
+}
 
 function SessionCompare() {
   const [sessions, setSessions] = useState([])
@@ -11,6 +49,19 @@ function SessionCompare() {
   const [sessionB, setSessionB] = useState(null)
   const [selectedA, setSelectedA] = useState('')
   const [selectedB, setSelectedB] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 })
+  const containerRef = useRef(null)
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (containerRef.current) {
+        setMousePosition({ x: e.clientX, y: e.clientY })
+      }
+    }
+    window.addEventListener('mousemove', handleMouseMove)
+    return () => window.removeEventListener('mousemove', handleMouseMove)
+  }, [])
 
   const loadSessions = useCallback(async () => {
     try {
@@ -22,11 +73,14 @@ function SessionCompare() {
   }, [])
 
   const loadSession = useCallback(async (id, setter) => {
+    setIsLoading(true)
     try {
       const data = await api.getSession(id)
       setter(data)
     } catch (error) {
       console.error('Error loading session:', error)
+    } finally {
+      setIsLoading(false)
     }
   }, [])
 
@@ -61,10 +115,8 @@ function SessionCompare() {
   const mergePublicationTrends = () => {
     const analysisA = getAnalysisMap(sessionA)
     const analysisB = getAnalysisMap(sessionB)
-
     const trendA = analysisA.publication_trend || []
     const trendB = analysisB.publication_trend || []
-
     const years = new Set()
     trendA.forEach(t => years.add(t.year))
     trendB.forEach(t => years.add(t.year))
@@ -79,54 +131,72 @@ function SessionCompare() {
   const getKeywordComparison = () => {
     const analysisA = getAnalysisMap(sessionA)
     const analysisB = getAnalysisMap(sessionB)
-
     const keywordsA = (analysisA.keyword_frequency || []).slice(0, 10).map(k => k.word)
     const keywordsB = (analysisB.keyword_frequency || []).slice(0, 10).map(k => k.word)
-
     const uniqueA = keywordsA.filter(w => !keywordsB.includes(w))
     const uniqueB = keywordsB.filter(w => !keywordsA.includes(w))
     const shared = keywordsA.filter(w => keywordsB.includes(w))
-
     return { uniqueA, uniqueB, shared }
   }
 
   const getCommonPapers = () => {
     if (!sessionA?.papers || !sessionB?.papers) return 0
-
     const idsA = new Set(sessionA.papers.map(p => p.external_id))
-    const common = sessionB.papers.filter(p => idsA.has(p.external_id))
-    return common.length
+    return sessionB.papers.filter(p => idsA.has(p.external_id)).length
   }
 
-  const renderPaperList = (session) => {
+  const renderPaperList = (session, variant) => {
     if (!session?.papers?.length) {
       return (
-        <div style={{ color: '#64748b', fontStyle: 'italic', padding: '1rem' }}>
-          No papers
+        <div className="compare-empty-papers">
+          <span>📭</span>
+          <p>No papers in this session</p>
         </div>
       )
     }
 
-    return session.papers.map(paper => (
-      <div
-        key={paper.id}
-        style={{
-          padding: '0.75rem',
-          background: '#0f172a',
-          borderRadius: '8px',
-          marginBottom: '0.5rem'
-        }}
+    return (
+      <motion.div
+        variants={containerVariants}
+        initial="hidden"
+        animate="visible"
+        className="compare-papers-list"
       >
-        <div style={{ color: '#f1f5f9', fontSize: '0.875rem', fontWeight: '500', marginBottom: '0.25rem' }}>
-          {paper.title.length > 60 ? paper.title.slice(0, 60) + '...' : paper.title}
+        {session.papers.map((paper, index) => (
+          <motion.div
+            key={paper.id}
+            variants={itemVariants}
+            className={`compare-paper-item ${variant}`}
+            whileHover={{ scale: 1.02, x: 4 }}
+          >
+            <div className="compare-paper-title">
+              {paper.title.length > 60 ? paper.title.slice(0, 60) + '...' : paper.title}
+            </div>
+            <div className="compare-paper-meta">
+              {paper.authors?.slice(0, 2).join(', ')}
+              {paper.authors?.length > 2 && ' et al.'}
+              {' • '}{paper.year}
+            </div>
+          </motion.div>
+        ))}
+      </motion.div>
+    )
+  }
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (active && payload && payload.length) {
+      return (
+        <div className="compare-chart-tooltip">
+          <p className="tooltip-label">{label}</p>
+          {payload.map((entry, index) => (
+            <p key={index} style={{ color: entry.color }}>
+              {entry.name}: {entry.value}
+            </p>
+          ))}
         </div>
-        <div style={{ color: '#64748b', fontSize: '0.75rem' }}>
-          {paper.authors?.slice(0, 2).join(', ')}
-          {paper.authors?.length > 2 && ' et al.'}
-          {' • '}{paper.year}
-        </div>
-      </div>
-    ))
+      )
+    }
+    return null
   }
 
   const renderComparisonPanel = () => {
@@ -137,233 +207,450 @@ function SessionCompare() {
     const commonCount = getCommonPapers()
 
     return (
-      <div style={{
-        background: '#1e293b',
-        borderRadius: '12px',
-        padding: '1.5rem',
-        marginTop: '2rem',
-        border: '1px solid #334155'
-      }}>
-        <h3 style={{ color: '#f1f5f9', marginBottom: '1.5rem' }}>Session Comparison</h3>
+      <motion.div
+        initial={{ opacity: 0, y: 30 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.3, duration: 0.5 }}
+        className="compare-analysis-panel"
+      >
+        <motion.div className="compare-panel-glow" animate={{ opacity: [0.3, 0.6, 0.3] }} transition={{ duration: 4, repeat: Infinity }} />
+        
+        <h3 className="compare-panel-title">
+          <span className="title-icon">📊</span>
+          Comparison Analysis
+        </h3>
 
-        <div style={{ marginBottom: '2rem' }}>
-          <h4 style={{ color: '#60a5fa', marginBottom: '1rem' }}>Publication Trends</h4>
+        {/* Publication Trends Chart */}
+        <motion.div
+          className="compare-chart-section"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.4 }}
+        >
+          <h4 className="compare-section-title">
+            <span>📈</span> Publication Trends
+          </h4>
           {mergedTrends.length > 0 ? (
-            <ResponsiveContainer width="100%" height={250}>
-              <LineChart data={mergedTrends}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis dataKey="year" stroke="#94a3b8" />
-                <YAxis stroke="#94a3b8" />
-                <Tooltip
-                  contentStyle={{ background: '#0f172a', border: '1px solid #334155', borderRadius: '8px' }}
-                />
-                <Legend />
-                <Line
-                  type="monotone"
-                  dataKey={sessionA.name}
-                  stroke="#60a5fa"
-                  strokeWidth={2}
-                  dot={{ fill: '#60a5fa', r: 4 }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey={sessionB.name}
-                  stroke="#a78bfa"
-                  strokeWidth={2}
-                  dot={{ fill: '#a78bfa', r: 4 }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            <div className="compare-chart-container">
+              <ResponsiveContainer width="100%" height={280}>
+                <LineChart data={mergedTrends}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(220, 38, 38, 0.1)" />
+                  <XAxis dataKey="year" stroke="#71717a" tick={{ fill: '#a1a1aa' }} />
+                  <YAxis stroke="#71717a" tick={{ fill: '#a1a1aa' }} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <Legend wrapperStyle={{ color: '#a1a1aa' }} />
+                  <Line
+                    type="monotone"
+                    dataKey={sessionA.name}
+                    stroke="#dc2626"
+                    strokeWidth={3}
+                    dot={{ fill: '#dc2626', r: 5, strokeWidth: 2, stroke: '#0a0a0a' }}
+                    activeDot={{ r: 8, fill: '#dc2626', stroke: '#fff', strokeWidth: 2 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey={sessionB.name}
+                    stroke="#f97316"
+                    strokeWidth={3}
+                    dot={{ fill: '#f97316', r: 5, strokeWidth: 2, stroke: '#0a0a0a' }}
+                    activeDot={{ r: 8, fill: '#f97316', stroke: '#fff', strokeWidth: 2 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
           ) : (
-            <div style={{ color: '#64748b', fontStyle: 'italic' }}>No trend data available</div>
+            <div className="compare-no-data">No trend data available</div>
           )}
-        </div>
+        </motion.div>
 
-        <div style={{ marginBottom: '2rem' }}>
-          <h4 style={{ color: '#60a5fa', marginBottom: '1rem' }}>Top Keywords</h4>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-            <div>
-              <div style={{ color: '#60a5fa', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
-                {sessionA.name} (unique)
+        {/* Keywords Comparison */}
+        <motion.div
+          className="compare-keywords-section"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5 }}
+        >
+          <h4 className="compare-section-title">
+            <span>🏷️</span> Keyword Analysis
+          </h4>
+          <div className="compare-keywords-grid">
+            <div className="keywords-column session-a">
+              <div className="keywords-header">
+                <span className="session-indicator a"></span>
+                {sessionA.name} (Unique)
               </div>
-              {keywordComparison.uniqueA.length > 0 ? (
-                keywordComparison.uniqueA.map((word, i) => (
-                  <span
-                    key={i}
-                    style={{
-                      display: 'inline-block',
-                      background: '#60a5fa20',
-                      color: '#60a5fa',
-                      padding: '0.25rem 0.5rem',
-                      borderRadius: '4px',
-                      margin: '0.25rem',
-                      fontSize: '0.75rem'
-                    }}
-                  >
-                    {word}
-                  </span>
-                ))
-              ) : (
-                <div style={{ color: '#64748b', fontSize: '0.875rem' }}>No unique keywords</div>
-              )}
+              <div className="keywords-tags">
+                {keywordComparison.uniqueA.length > 0 ? (
+                  keywordComparison.uniqueA.map((word, i) => (
+                    <motion.span
+                      key={i}
+                      className="keyword-tag a"
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{ delay: 0.1 * i }}
+                      whileHover={{ scale: 1.1 }}
+                    >
+                      {word}
+                    </motion.span>
+                  ))
+                ) : (
+                  <span className="no-keywords">No unique keywords</span>
+                )}
+              </div>
             </div>
-            <div>
-              <div style={{ color: '#a78bfa', fontSize: '0.875rem', marginBottom: '0.5rem' }}>
-                {sessionB.name} (unique)
+
+            <div className="keywords-column shared">
+              <div className="keywords-header">
+                <span className="session-indicator shared"></span>
+                Shared Keywords
               </div>
-              {keywordComparison.uniqueB.length > 0 ? (
-                keywordComparison.uniqueB.map((word, i) => (
-                  <span
-                    key={i}
-                    style={{
-                      display: 'inline-block',
-                      background: '#a78bfa20',
-                      color: '#a78bfa',
-                      padding: '0.25rem 0.5rem',
-                      borderRadius: '4px',
-                      margin: '0.25rem',
-                      fontSize: '0.75rem'
-                    }}
-                  >
-                    {word}
-                  </span>
-                ))
-              ) : (
-                <div style={{ color: '#64748b', fontSize: '0.875rem' }}>No unique keywords</div>
-              )}
+              <div className="keywords-tags">
+                {keywordComparison.shared.length > 0 ? (
+                  keywordComparison.shared.map((word, i) => (
+                    <motion.span
+                      key={i}
+                      className="keyword-tag shared"
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{ delay: 0.1 * i }}
+                      whileHover={{ scale: 1.1 }}
+                    >
+                      {word}
+                    </motion.span>
+                  ))
+                ) : (
+                  <span className="no-keywords">No shared keywords</span>
+                )}
+              </div>
+            </div>
+
+            <div className="keywords-column session-b">
+              <div className="keywords-header">
+                <span className="session-indicator b"></span>
+                {sessionB.name} (Unique)
+              </div>
+              <div className="keywords-tags">
+                {keywordComparison.uniqueB.length > 0 ? (
+                  keywordComparison.uniqueB.map((word, i) => (
+                    <motion.span
+                      key={i}
+                      className="keyword-tag b"
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{ delay: 0.1 * i }}
+                      whileHover={{ scale: 1.1 }}
+                    >
+                      {word}
+                    </motion.span>
+                  ))
+                ) : (
+                  <span className="no-keywords">No unique keywords</span>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        </motion.div>
 
-        <div>
-          <h4 style={{ color: '#60a5fa', marginBottom: '1rem' }}>Overlap</h4>
-          <div style={{
-            background: '#0f172a',
-            padding: '1rem',
-            borderRadius: '8px',
-            textAlign: 'center'
-          }}>
-            <div style={{ fontSize: '2rem', fontWeight: 'bold', color: '#22c55e' }}>
-              {commonCount}
-            </div>
-            <div style={{ color: '#94a3b8', fontSize: '0.875rem' }}>
-              papers appear in both sessions
+        {/* Overlap Stats */}
+        <motion.div
+          className="compare-overlap-section"
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.6 }}
+        >
+          <h4 className="compare-section-title">
+            <span>🔗</span> Paper Overlap
+          </h4>
+          <div className="overlap-stats-container">
+            <motion.div
+              className="overlap-stat-card"
+              whileHover={{ scale: 1.05, boxShadow: "0 0 40px rgba(220, 38, 38, 0.4)" }}
+            >
+              <motion.div
+                className="overlap-number"
+                initial={{ scale: 0 }}
+                animate={{ scale: 1 }}
+                transition={{ type: "spring", stiffness: 200, delay: 0.7 }}
+              >
+                {commonCount}
+              </motion.div>
+              <div className="overlap-label">Common Papers</div>
+              <div className="overlap-sublabel">appear in both sessions</div>
+            </motion.div>
+
+            <div className="overlap-visual">
+              <div className="venn-diagram">
+                <motion.div
+                  className="venn-circle a"
+                  animate={{ scale: [1, 1.05, 1] }}
+                  transition={{ duration: 3, repeat: Infinity }}
+                >
+                  <span>{sessionA?.papers?.length || 0}</span>
+                </motion.div>
+                <motion.div
+                  className="venn-overlap"
+                  animate={{ opacity: [0.5, 1, 0.5] }}
+                  transition={{ duration: 2, repeat: Infinity }}
+                >
+                  {commonCount}
+                </motion.div>
+                <motion.div
+                  className="venn-circle b"
+                  animate={{ scale: [1, 1.05, 1] }}
+                  transition={{ duration: 3, repeat: Infinity, delay: 0.5 }}
+                >
+                  <span>{sessionB?.papers?.length || 0}</span>
+                </motion.div>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
+        </motion.div>
+      </motion.div>
     )
   }
 
   return (
-    <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
-      <h1 style={{ color: '#f1f5f9', marginBottom: '2rem' }}>Session Compare</h1>
+    <div ref={containerRef} className="compare-container">
+      {/* Animated background spotlight */}
+      <motion.div
+        className="compare-spotlight"
+        animate={{ left: mousePosition.x, top: mousePosition.y }}
+        transition={{ type: "spring", damping: 30, stiffness: 200 }}
+      />
 
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: '1.5rem',
-        marginBottom: '1rem'
-      }}>
-        <div>
-          <label style={{ color: '#94a3b8', display: 'block', marginBottom: '0.5rem' }}>
-            Session A
-          </label>
+      {/* Floating particles */}
+      <div className="compare-particles">
+        {[...Array(25)].map((_, i) => (
+          <motion.div
+            key={i}
+            className="compare-particle"
+            animate={{
+              y: [0, -40, 0],
+              x: [0, Math.random() * 15 - 7.5, 0],
+              opacity: [0.1, 0.5, 0.1],
+              scale: [0.8, 1.1, 0.8]
+            }}
+            transition={{
+              duration: 4 + Math.random() * 2,
+              repeat: Infinity,
+              delay: Math.random() * 3,
+              ease: "easeInOut"
+            }}
+            style={{
+              left: `${Math.random() * 100}%`,
+              top: `${Math.random() * 100}%`
+            }}
+          />
+        ))}
+      </div>
+
+      {/* Header */}
+      <motion.header
+        className="compare-header"
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5 }}
+      >
+        <motion.div
+          className="compare-header-glow"
+          animate={{ scale: [1, 1.2, 1], opacity: [0.4, 0.7, 0.4] }}
+          transition={{ duration: 3, repeat: Infinity }}
+        />
+        <div className="compare-header-content">
+          <motion.div
+            className="compare-header-icon"
+            animate={{ rotateY: [0, 360] }}
+            transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
+          >
+            ⚖️
+          </motion.div>
+          <div>
+            <h1 className="compare-title">Session Compare</h1>
+            <p className="compare-subtitle">Analyze and compare research sessions side by side</p>
+          </div>
+        </div>
+      </motion.header>
+
+      {/* Session Selectors */}
+      <motion.div
+        className="compare-selectors"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.2 }}
+      >
+        <motion.div
+          className="selector-card session-a"
+          whileHover={{ scale: 1.02, boxShadow: "0 0 40px rgba(220, 38, 38, 0.3)" }}
+        >
+          <div className="selector-header">
+            <span className="selector-icon">🔴</span>
+            <label className="selector-label">Session A</label>
+          </div>
           <select
             value={selectedA}
             onChange={(e) => setSelectedA(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '0.75rem',
-              background: '#1e293b',
-              border: '1px solid #334155',
-              borderRadius: '8px',
-              color: '#e2e8f0',
-              fontSize: '1rem'
-            }}
+            className="compare-select"
           >
             <option value="">Select a session...</option>
             {sessions.map(s => (
               <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
-        </div>
-        <div>
-          <label style={{ color: '#94a3b8', display: 'block', marginBottom: '0.5rem' }}>
-            Session B
-          </label>
+        </motion.div>
+
+        <motion.div
+          className="selector-vs"
+          animate={{ scale: [1, 1.1, 1], rotate: [0, 5, -5, 0] }}
+          transition={{ duration: 2, repeat: Infinity }}
+        >
+          VS
+        </motion.div>
+
+        <motion.div
+          className="selector-card session-b"
+          whileHover={{ scale: 1.02, boxShadow: "0 0 40px rgba(249, 115, 22, 0.3)" }}
+        >
+          <div className="selector-header">
+            <span className="selector-icon">🟠</span>
+            <label className="selector-label">Session B</label>
+          </div>
           <select
             value={selectedB}
             onChange={(e) => setSelectedB(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '0.75rem',
-              background: '#1e293b',
-              border: '1px solid #334155',
-              borderRadius: '8px',
-              color: '#e2e8f0',
-              fontSize: '1rem'
-            }}
+            className="compare-select"
           >
             <option value="">Select a session...</option>
             {sessions.map(s => (
               <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
-        </div>
-      </div>
+        </motion.div>
+      </motion.div>
 
-      {selectedA && selectedB && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-          <div style={{
-            background: '#1e293b',
-            padding: '1.5rem',
-            borderRadius: '12px',
-            border: '1px solid #60a5fa'
-          }}>
-            <h3 style={{ color: '#60a5fa', marginBottom: '1rem' }}>{sessionA?.name || 'Session A'}</h3>
-            <div style={{ color: '#94a3b8', fontSize: '0.875rem', marginBottom: '1rem' }}>
-              {sessionA?.papers?.length || 0} papers
-            </div>
-            <div style={{ maxHeight: '400px', overflow: 'auto' }}>
-              {renderPaperList(sessionA)}
-            </div>
-          </div>
+      {/* Loading State */}
+      <AnimatePresence>
+        {isLoading && (
+          <motion.div
+            className="compare-loading"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="compare-spinner"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            />
+            <p>Loading session data...</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-          <div style={{
-            background: '#1e293b',
-            padding: '1.5rem',
-            borderRadius: '12px',
-            border: '1px solid #a78bfa'
-          }}>
-            <h3 style={{ color: '#a78bfa', marginBottom: '1rem' }}>{sessionB?.name || 'Session B'}</h3>
-            <div style={{ color: '#94a3b8', fontSize: '0.875rem', marginBottom: '1rem' }}>
-              {sessionB?.papers?.length || 0} papers
-            </div>
-            <div style={{ maxHeight: '400px', overflow: 'auto' }}>
-              {renderPaperList(sessionB)}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Session Cards */}
+      <AnimatePresence>
+        {selectedA && selectedB && sessionA && sessionB && (
+          <motion.div
+            className="compare-sessions-grid"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ delay: 0.2 }}
+          >
+            <motion.div
+              className="compare-session-card session-a"
+              initial={{ x: -50, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ delay: 0.3 }}
+            >
+              <motion.div className="session-card-glow a" animate={{ opacity: [0.3, 0.6, 0.3] }} transition={{ duration: 3, repeat: Infinity }} />
+              <div className="session-card-header">
+                <h3 className="session-card-title">{sessionA.name}</h3>
+                <motion.div
+                  className="session-card-badge"
+                  whileHover={{ scale: 1.1 }}
+                >
+                  {sessionA.papers?.length || 0} papers
+                </motion.div>
+              </div>
+              <div className="session-card-query">
+                <span className="query-icon">🔍</span>
+                {sessionA.query}
+              </div>
+              <div className="session-papers-scroll">
+                {renderPaperList(sessionA, 'a')}
+              </div>
+            </motion.div>
 
+            <motion.div
+              className="compare-session-card session-b"
+              initial={{ x: 50, opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              transition={{ delay: 0.4 }}
+            >
+              <motion.div className="session-card-glow b" animate={{ opacity: [0.3, 0.6, 0.3] }} transition={{ duration: 3, repeat: Infinity, delay: 0.5 }} />
+              <div className="session-card-header">
+                <h3 className="session-card-title">{sessionB.name}</h3>
+                <motion.div
+                  className="session-card-badge"
+                  whileHover={{ scale: 1.1 }}
+                >
+                  {sessionB.papers?.length || 0} papers
+                </motion.div>
+              </div>
+              <div className="session-card-query">
+                <span className="query-icon">🔍</span>
+                {sessionB.query}
+              </div>
+              <div className="session-papers-scroll">
+                {renderPaperList(sessionB, 'b')}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Comparison Panel */}
       {renderComparisonPanel()}
 
-      {(!selectedA || !selectedB) && (
-        <div style={{
-          background: '#1e293b',
-          padding: '3rem',
-          borderRadius: '12px',
-          textAlign: 'center',
-          marginTop: '2rem',
-          border: '1px solid #334155'
-        }}>
-          <div style={{ color: '#64748b', fontSize: '2rem', marginBottom: '1rem' }}>⚖️</div>
-          <p style={{ color: '#94a3b8' }}>
-            Select two sessions above to compare them
-          </p>
-        </div>
-      )}
+      {/* Empty State */}
+      <AnimatePresence>
+        {(!selectedA || !selectedB) && (
+          <motion.div
+            className="compare-empty-state"
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.9 }}
+          >
+            <motion.div
+              className="compare-empty-glow"
+              animate={{ scale: [1, 1.3, 1], opacity: [0.3, 0.6, 0.3] }}
+              transition={{ duration: 3, repeat: Infinity }}
+            />
+            <motion.div
+              className="compare-empty-icon"
+              animate={{ y: [0, -15, 0], rotateZ: [0, 10, -10, 0] }}
+              transition={{ duration: 3, repeat: Infinity }}
+            >
+              ⚖️
+            </motion.div>
+            <h2 className="compare-empty-title">Ready to Compare</h2>
+            <p className="compare-empty-subtitle">
+              Select two sessions above to analyze their differences and similarities
+            </p>
+            <div className="compare-empty-features">
+              <motion.div className="feature-item" whileHover={{ scale: 1.05, x: 5 }}>
+                <span>📈</span> Publication Trends
+              </motion.div>
+              <motion.div className="feature-item" whileHover={{ scale: 1.05, x: 5 }}>
+                <span>🏷️</span> Keyword Analysis
+              </motion.div>
+              <motion.div className="feature-item" whileHover={{ scale: 1.05, x: 5 }}>
+                <span>🔗</span> Paper Overlap
+              </motion.div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

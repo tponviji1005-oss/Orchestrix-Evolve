@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Dict, List
 import asyncio
 
-from agents import discovery, analysis, citation, summarizer
+from agents import discovery, analysis, citation, summarizer, conflict_detector
 
 
 def utcnow():
@@ -12,6 +12,7 @@ def utcnow():
 async def orchestrate(query: str, session_id: str, page: int = 0) -> Dict:
     """
     Central orchestration layer that coordinates all agents and records trace log.
+    Includes conflict detection between Analysis and Summarization agents.
     """
     trace = []
 
@@ -22,6 +23,8 @@ async def orchestrate(query: str, session_id: str, page: int = 0) -> Dict:
     trace[-1] = {**trace[-1], "status": "done", "result": f"{len(papers)} papers found"}
 
     analysis_result = None
+    conflicts = []
+
     if len(papers) > 5:
         trace.append({"agent": "Analysis", "status": "running", "timestamp": utcnow()})
 
@@ -58,6 +61,42 @@ async def orchestrate(query: str, session_id: str, page: int = 0) -> Dict:
     papers_with_citations = citation_results
     summaries_list = summary_results
 
+    if analysis_result and summaries_list and len(summaries_list) > 0:
+        trace.append(
+            {"agent": "Conflict Detection", "status": "running", "timestamp": utcnow()}
+        )
+
+        conflict_result = await conflict_detector.detect_conflicts(
+            papers, analysis_result, summaries_list
+        )
+
+        conflicts = conflict_result.get("conflicts", [])
+
+        if conflicts:
+            conflict_summary = conflict_result.get(
+                "summary", f"Detected {len(conflicts)} conflicts"
+            )
+            trace[-1] = {
+                **trace[-1],
+                "status": "done",
+                "result": f"{len(conflicts)} conflicts detected - review in conflicts panel",
+            }
+        else:
+            trace[-1] = {
+                **trace[-1],
+                "status": "done",
+                "result": "No conflicts detected",
+            }
+    else:
+        trace.append(
+            {
+                "agent": "Conflict Detection",
+                "status": "skipped",
+                "reason": "Insufficient data for conflict detection",
+                "timestamp": utcnow(),
+            }
+        )
+
     return {
         "papers": papers_with_citations,
         "analysis": analysis_result,
@@ -67,4 +106,8 @@ async def orchestrate(query: str, session_id: str, page: int = 0) -> Dict:
         ],
         "summaries": summaries_list,
         "trace": trace,
+        "conflicts": conflicts,
+        "conflict_summary": conflict_result.get("summary", "")
+        if conflicts
+        else "No conflicts detected",
     }

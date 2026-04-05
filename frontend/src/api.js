@@ -45,5 +45,37 @@ export const api = {
 
   exportBib: (sessionId) => `${API_BASE}/sessions/${sessionId}/export/bib`,
 
-  exportTxt: (sessionId) => `${API_BASE}/sessions/${sessionId}/export/txt`
+  exportTxt: (sessionId) => `${API_BASE}/sessions/${sessionId}/export/txt`,
+
+  getConflicts: (sessionId) => fetchJSON(`/sessions/${sessionId}/conflicts`),
+
+  resolveConflict: (sessionId, conflictId, resolutionNotes) =>
+    fetchJSON(`/sessions/${sessionId}/conflicts/${conflictId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ resolution_notes: resolutionNotes })
+    }),
+
+  detectConflicts: (sessionId) =>
+    fetchJSON(`/sessions/${sessionId}/detect-conflicts`, { method: 'POST' }),
+
+  createDigest: (name, query, frequency, notifyEmail) =>
+    fetchJSON('/digests', {
+      method: 'POST',
+      body: JSON.stringify({ name, query, frequency, notify_email: notifyEmail })
+    }),
+
+  getDigests: () => fetchJSON('/digests'),
+
+  getDigest: (digestId) => fetchJSON(`/digests/${digestId}`),
+
+  deleteDigest: (digestId) =>
+    fetchJSON(`/digests/${digestId}`, { method: 'DELETE' }),
+
+  toggleDigest: (digestId) =>
+    fetchJSON(`/digests/${digestId}/toggle`, { method: 'PATCH' }),
+
+  triggerDigestRun: (digestId) =>
+    fetchJSON(`/digests/${digestId}/run`, { method: 'POST' }),
+
+  previewDigest: (digestId) => fetchJSON(`/digests/${digestId}/preview`)
 }
